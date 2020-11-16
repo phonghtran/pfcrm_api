@@ -50,6 +50,7 @@ app.post("/api/create", (req, res) => {
                 const userContents = doc.data();
                 let interactions = userContents.interactions;
                 let count = userContents.count;
+                let countTotal = userContents.countTotal + 1;
 
                 interactions.push({
                   interaction: req.body.interaction,
@@ -76,6 +77,7 @@ app.post("/api/create", (req, res) => {
                   count: count,
                   interactions: interactions,
                   lastInteraction: loggedDate,
+                  countTotal: countTotal,
                 });
               });
             } // if user exists
@@ -276,6 +278,7 @@ app.post("/api/createBatch", (req, res) => {
           let userContents = users[userID];
           let interactions = userContents.interactions;
           let count = userContents.count;
+          let countTotal = userContents.countTotal + 1;
 
           interactions.push({
             interaction: req.body.interaction,
@@ -290,16 +293,11 @@ app.post("/api/createBatch", (req, res) => {
 
           const targetUser = usersCollection.doc(userID);
 
-          console.log({
-            count: count,
-            interactions: interactions,
-            lastInteraction: loggedDate,
-          });
-
           batch.update(targetUser, {
             count: count,
             interactions: interactions,
             lastInteraction: loggedDate,
+            countTotal: countTotal,
           });
         }
 
@@ -354,10 +352,11 @@ app.get("/api/read", (req, res) => {
       if (checkAPIKey(req.headers.authorization)) {
         let response = {};
 
-        const limit = req.query.limit ? parseFloat(req.query.limit) : 99999;
+        const limit = req.query.limit ? parseFloat(req.query.limit) : 20;
+        const sortBy = req.query.sortBy ? req.query.sortBy : "lastInteraction";
 
         await usersCollection
-          .orderBy("lastInteraction", "desc")
+          .orderBy(sortBy, "desc")
           .limit(limit)
           .get()
           .then((querySnapshot) => {
