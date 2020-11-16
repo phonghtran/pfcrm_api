@@ -25,6 +25,10 @@ function checkAPIKey(apikey) {
 app.post("/api/create", (req, res) => {
   (async () => {
     try {
+      if (!req.body.name || !req.body.interaction) {
+        return res.status(400).send("Missing fields");
+      }
+
       if (checkAPIKey(req.headers.authorization)) {
         let doesUserExist = false;
         let batch = db.batch();
@@ -185,7 +189,7 @@ app.post("/api/create", (req, res) => {
           loggedDate: loggedDate,
           users: {},
         };
-        newEntryContents["users"][userID] = req.body.name;
+        newEntryContents["users"][userID] = { name: req.body.name };
 
         batch.set(newEntry, newEntryContents);
 
@@ -195,6 +199,122 @@ app.post("/api/create", (req, res) => {
           .catch((err) => console.log("Error obj updated", err));
 
         return res.status(200).send();
+      } else {
+        return res.status(401).send("Not Authorized");
+      }
+    } catch (error) {
+      console.log(error);
+      return res.status(500).send(error);
+    }
+  })();
+});
+
+// read batches
+app.post("/api/createBatch", (req, res) => {
+  (async () => {
+    try {
+      if (!req.body.batchID || !req.body.interaction) {
+        return res.status(400).send("Missing fields");
+      }
+
+      if (checkAPIKey(req.headers.authorization)) {
+        let batch = db.batch();
+        const loggedDate = admin.firestore.Timestamp.fromDate(new Date());
+
+        console.log(req.body.batchID);
+        const batchID = req.body.batchID;
+        let batchContents = {};
+
+        await batchesCollection
+          .doc(batchID)
+          .get()
+          .then((doc) => {
+            if (doc.exists) {
+              // add entry
+              // update user
+              batchContents = doc.data();
+            } else {
+              // doc.data() will be undefined in this case
+              console.log("No such document!");
+            }
+            return;
+          })
+          .catch((error) => {
+            console.log("Error getting document:", error);
+          });
+
+        let users = {};
+
+        await usersCollection
+          .get()
+          .then((querySnapshot) => {
+            querySnapshot.forEach((doc) => {
+              users[doc.id] = doc.data();
+              users[doc.id]["userID"] = doc.id;
+            });
+            return null;
+          })
+          .catch((error) => {
+            console.log("Error getting document:", error);
+          });
+
+        for (const userID in batchContents.users) {
+          const newEntry = entriesCollection.doc();
+          let newEntryContents = {
+            interaction: req.body.interaction,
+            loggedDate: loggedDate,
+            users: {},
+          };
+          newEntryContents["users"][userID] = {
+            name: batchContents.users[userID]["name"],
+          };
+
+          console.log(newEntryContents);
+
+          batch.set(newEntry, newEntryContents);
+
+          let userContents = users[userID];
+          let interactions = userContents.interactions;
+          let count = userContents.count;
+
+          interactions.push({
+            interaction: req.body.interaction,
+            loggedDate: loggedDate,
+          });
+
+          if (count[req.body.interaction]) {
+            count[req.body.interaction] += 1;
+          } else {
+            count[req.body.interaction] = 1;
+          } // add interaction count
+
+          const targetUser = usersCollection.doc(userID);
+
+          console.log({
+            count: count,
+            interactions: interactions,
+            lastInteraction: loggedDate,
+          });
+
+          batch.update(targetUser, {
+            count: count,
+            interactions: interactions,
+            lastInteraction: loggedDate,
+          });
+        }
+
+        const targetBatch = batchesCollection.doc(batchID);
+
+        batch.update(targetBatch, {
+          loggedDate: loggedDate,
+        });
+
+        await batch
+          .commit()
+          .then((res) => console.log("obj updated", res))
+          .catch((err) => console.log("Error obj updated", err));
+
+        return res.status(200).send("Saved");
       } else {
         return res.status(401).send("Not Authorized");
       }
@@ -235,8 +355,6 @@ app.get("/api/read", (req, res) => {
         let response = {};
 
         const limit = req.query.limit ? parseFloat(req.query.limit) : 99999;
-
-        console.log(limit, req.query.limit);
 
         await usersCollection
           .orderBy("lastInteraction", "desc")
