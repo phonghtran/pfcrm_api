@@ -1,9 +1,10 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const express = require("express");
-const cors = require("cors");
+const cors = require("cors")({ origin: true });
 const app = express();
-app.use(cors({ origin: true }));
+
+app.use(cors);
 
 var serviceAccount = require("./permissions.json");
 
@@ -22,90 +23,134 @@ function checkAPIKey(apikey) {
 }
 
 // create
-app.post("/api/create", (req, res) => {
-  (async () => {
-    try {
-      if (!req.body.name || !req.body.interaction) {
-        return res.status(400).send("Missing fields");
-      }
+app.post("/api/create", async (req, res) => {
+  try {
+    if (!req.body.name || !req.body.interaction) {
+      return res.status(400).send("Missing fields");
+    }
 
-      if (checkAPIKey(req.headers.authorization)) {
-        let doesUserExist = false;
-        let batch = db.batch();
-        const loggedDate = admin.firestore.Timestamp.fromDate(new Date());
-        let userID = "";
+    if (checkAPIKey(req.headers.authorization)) {
+      let doesUserExist = false;
+      let batch = db.batch();
+      const loggedDate = admin.firestore.Timestamp.fromDate(new Date());
+      let userID = "";
 
-        // check if user already exists
-        await usersCollection
-          .where("name", "==", req.body.name)
-          .limit(1)
-          .get()
-          .then((snapshot) => {
-            if (!snapshot.empty) {
-              snapshot.forEach((doc) => {
-                // doc.data() is never undefined for query doc snapshots
+      // check if user already exists
+      await usersCollection
+        .where("name", "==", req.body.name)
+        .limit(1)
+        .get()
+        .then((snapshot) => {
+          if (!snapshot.empty) {
+            snapshot.forEach((doc) => {
+              // doc.data() is never undefined for query doc snapshots
 
-                doesUserExist = true;
+              doesUserExist = true;
+              console.log("user exists");
 
-                const userContents = doc.data();
-                let interactions = userContents.interactions;
-                let count = userContents.count;
-                let countTotal = userContents.countTotal + 1;
+              const userContents = doc.data();
+              let interactions = userContents.interactions;
+              let count = userContents.count;
+              let countTotal = userContents.countTotal + 1;
 
-                interactions.push({
-                  interaction: req.body.interaction,
-                  loggedDate: loggedDate,
-                });
-
-                if (count[req.body.interaction]) {
-                  count[req.body.interaction] += 1;
-                } else {
-                  count[req.body.interaction] = 1;
-                } // add interaction count
-
-                userID = doc.id;
-
-                const targetUser = usersCollection.doc(userID);
-
-                // targetUser.update({
-                //   count: count,
-                //   interactions: interactions,
-                //   lastInteraction: loggedDate,
-                // });
-
-                batch.update(targetUser, {
-                  count: count,
-                  interactions: interactions,
-                  lastInteraction: loggedDate,
-                  countTotal: countTotal,
-                });
-              });
-            } // if user exists
-            return null;
-          }); // then
-
-        //user doesn't exist, add new
-        if (doesUserExist === false) {
-          let contents = {
-            name: req.body.name,
-            count: 1,
-            interactions: [
-              {
+              interactions.push({
                 interaction: req.body.interaction,
                 loggedDate: loggedDate,
-              },
-            ],
-          };
+              });
 
-          const newUser = usersCollection.doc();
-          userID = newUser.id;
-          batch.set(newUser, contents);
-          //   await usersCollection.add(contents);
-        } // if new user
+              if (count[req.body.interaction]) {
+                count[req.body.interaction] += 1;
+              } else {
+                count[req.body.interaction] = 1;
+              } // add interaction count
 
-        //check if qualifies for batch
-        let isPartOfBatch = false;
-        await batchesCollection
+              userID = doc.id;
+
+              const targetUser = usersCollection.doc(userID);
+
+              // targetUser.update({
+              //   count: count,
+              //   interactions: interactions,
+              //   lastInteraction: loggedDate,
+              // });
+
+              batch.update(targetUser, {
+                count: count,
+                interactions: interactions,
+                lastInteraction: loggedDate,
+                countTotal: countTotal,
+              });
+            });
+          } // if user exists
+          return null;
+        }); // then
+
+      //user doesn't exist, add new
+      if (doesUserExist === false) {
+        console.log("user doesnt exists. making new");
+        let contents = {
+          name: req.body.name,
+          count: 1,
+          interactions: [
+            {
+              interaction: req.body.interaction,
+              loggedDate: loggedDate,
+            },
+          ],
+        };
+
+        const newUser = usersCollection.doc();
+        userID = newUser.id;
+        batch.set(newUser, contents);
+        //   await usersCollection.add(contents);
+      } // if new user
+
+      //check if qualifies for batch
+      let isPartOfBatch = false;
+      await batchesCollection
+        .orderBy("loggedDate", "desc")
+        .limit(1)
+        .get()
+        .then((querySnapshot) => {
+          let docs = querySnapshot.docs;
+
+          for (let doc of docs) {
+            const contents = doc.data();
+
+            const timeDiff = Math.abs(
+              loggedDate.seconds - contents.loggedDate.seconds
+            );
+
+            if (timeDiff < 240 && !contents.locked) {
+              console.log("adding to batch");
+              const users = contents.users;
+              users[userID] = { name: req.body.name };
+
+              const count = contents.count + 1;
+
+              console.log({
+                loggedDate: loggedDate,
+                users: users,
+              });
+
+              thisBatch = batchesCollection.doc(doc.id);
+
+              batch.update(thisBatch, {
+                count: count,
+                loggedDate: loggedDate,
+                users: users,
+              });
+
+              isPartOfBatch = true;
+            }
+          }
+
+          return null;
+        }); // check batch to insert
+
+      // doesn't qualify for batch, check if recent entry is close enough to make new batch
+      if (isPartOfBatch === false) {
+        await entriesCollection
           .orderBy("loggedDate", "desc")
           .limit(1)
           .get()
@@ -120,96 +165,66 @@ app.post("/api/create", (req, res) => {
               );
 
               if (timeDiff < 240) {
-                const users = contents.users;
-                users[userID] = { name: req.body.name };
+                // add to batch
+                // update time stampe
+                // add user
 
-                console.log({
+                console.log(
+                  "not part of last batch. checking last entry to maybe batch"
+                );
+
+                const newBatch = batchesCollection.doc();
+
+                const newBatchContents = {
                   loggedDate: loggedDate,
-                  users: users,
-                });
+                  count: 0,
+                  users: {},
+                };
 
-                batch.update(doc, {
-                  loggedDate: loggedDate,
-                  users: users,
-                });
+                newBatchContents["users"][userID] = {
+                  name: req.body.name,
+                };
 
-                isPartOfBatch = true;
+                newBatchContents["users"][Object.keys(contents.users)[0]] = {
+                  name: Object.entries(contents.users)[0][1]["name"],
+                };
+
+                batch.set(newBatch, newBatchContents);
               }
             }
 
             return null;
-          }); // check batch to insert
+          }); // check entry
+      } //isPartOfBatch == false
 
-        // doesn't qualify for batch, check if recent entry is close enough to make new batch
-        if (isPartOfBatch === false) {
-          await entriesCollection
-            .orderBy("loggedDate", "desc")
-            .limit(1)
-            .get()
-            .then((querySnapshot) => {
-              let docs = querySnapshot.docs;
+      // make new raw entry
+      console.log("add to entry");
+      const newEntry = entriesCollection.doc();
+      let newEntryContents = {
+        interaction: req.body.interaction,
+        loggedDate: loggedDate,
+        users: {},
+      };
+      newEntryContents["users"][userID] = { name: req.body.name };
 
-              for (let doc of docs) {
-                const contents = doc.data();
+      batch.set(newEntry, newEntryContents);
 
-                const timeDiff = Math.abs(
-                  loggedDate.seconds - contents.loggedDate.seconds
-                );
+      console.log("committing batch");
 
-                if (timeDiff < 240) {
-                  // add to batch
-                  // update time stampe
-                  // add user
+      await batch
+        .commit()
+        .then((res) => console.log("obj updated", res))
+        .catch((err) => console.log("Error obj updated", err));
 
-                  const newBatch = batchesCollection.doc();
-
-                  const newBatchContents = {
-                    loggedDate: loggedDate,
-                    users: {},
-                  };
-
-                  newBatchContents["users"][userID] = {
-                    name: req.body.name,
-                  };
-
-                  newBatchContents["users"][Object.keys(contents.users)[0]] = {
-                    name: Object.entries(contents.users)[0][1]["name"],
-                  };
-
-                  batch.set(newBatch, newBatchContents);
-                }
-              }
-
-              return null;
-            }); // check entry
-        } //isPartOfBatch == false
-
-        // make new raw entry
-        const newEntry = entriesCollection.doc();
-        let newEntryContents = {
-          interaction: req.body.interaction,
-          loggedDate: loggedDate,
-          users: {},
-        };
-        newEntryContents["users"][userID] = { name: req.body.name };
-
-        batch.set(newEntry, newEntryContents);
-
-        await batch
-          .commit()
-          .then((res) => console.log("obj updated", res))
-          .catch((err) => console.log("Error obj updated", err));
-
-        return res.status(200).send();
-      } else {
-        return res.status(401).send("Not Authorized");
-      }
-    } catch (error) {
-      console.log(error);
-      return res.status(500).send(error);
+      return res.status(200).send(userID);
+    } else {
+      return res.status(401).send("Not Authorized");
     }
-  })();
-});
+  } catch (error) {
+    console.log(error);
+    return res.status(500).send(error);
+  }
+}); // create
 
 // read batches
 app.post("/api/createBatch", (req, res) => {
@@ -303,9 +318,9 @@ app.post("/api/createBatch", (req, res) => {
 
         const targetBatch = batchesCollection.doc(batchID);
 
-        batch.update(targetBatch, {
-          loggedDate: loggedDate,
-        });
+        const count = batchContents.count + 1;
+
+        batch.update(targetBatch, { count: count, loggedDate: loggedDate });
 
         await batch
           .commit()
