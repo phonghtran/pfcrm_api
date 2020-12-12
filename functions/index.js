@@ -126,7 +126,11 @@ app.post("/api/create", async (req, res) => {
               const users = contents.users;
               users[userID] = { name: req.body.name };
 
-              const count = contents.count + 1;
+              let count = 1;
+
+              if (!isNaN(contents.count)) {
+                count = contents.count + 1;
+              }
 
               console.log({
                 loggedDate: loggedDate,
@@ -318,7 +322,11 @@ app.post("/api/createBatch", (req, res) => {
 
         const targetBatch = batchesCollection.doc(batchID);
 
-        const count = batchContents.count + 1;
+        let count = 1;
+
+        if (!isNaN(batchContents.count)) {
+          count = batchContents.count + 1;
+        }
 
         batch.update(targetBatch, { count: count, loggedDate: loggedDate });
 
