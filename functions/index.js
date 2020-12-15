@@ -411,9 +411,8 @@ app.get("/api/batches", (req, res) => {
 
         const limit = req.query.limit ? parseFloat(req.query.limit) : 10;
 
-        console.log(limit, req.query.limit);
-
         await batchesCollection
+          .orderBy("locked", "desc")
           .orderBy("loggedDate", "desc")
           .limit(limit)
           .get()
